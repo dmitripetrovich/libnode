@@ -1,0 +1,26 @@
+diff --git a/configure.py b/configure.py
+index 77c87f5..26a93c7 100755
+--- a/configure.py
++++ b/configure.py
+@@ -1639,7 +1639,7 @@ def configure_node(o):
+   elif sys.platform.startswith('zos'):
+     shlib_suffix = '%s.x'
+   else:
+-    shlib_suffix = 'so.%s'
++    shlib_suffix = 'so'
+   if '%s' in shlib_suffix:
+     shlib_suffix %= node_module_version
+ 
+diff --git a/node.gyp b/node.gyp
+index f9ee71d..b14744d 100644
+--- a/node.gyp
++++ b/node.gyp
+@@ -30,7 +30,7 @@
+     'node_v8_options%': '',
+     'node_enable_v8_vtunejit%': 'false',
+     'node_core_target_name%': 'node',
+-    'node_lib_target_name%': 'libnode',
++    'node_lib_target_name%': 'libnode22',
+     'node_intermediate_lib_type%': 'static_library',
+     'node_builtin_modules_path%': '',
+     'linked_module_files': [

@@ -1,0 +1,23 @@
+diff --git a/src/node_options.cc b/src/node_options.cc
+index 5b74045..fe3b222 100644
+--- a/src/node_options.cc
++++ b/src/node_options.cc
+@@ -411,6 +411,8 @@ DebugOptionsParser::DebugOptionsParser() {
+ }
+ 
+ EnvironmentOptionsParser::EnvironmentOptionsParser() {
++  AddOption("--fork-node22", "", &EnvironmentOptions::fork_node22);
++
+   AddOption("--conditions", "additional user conditions for conditional exports and imports", &EnvironmentOptions::conditions,
+diff --git a/src/node_options.h b/src/node_options.h
+index c1bcc06..ac0dfef 100644
+--- a/src/node_options.h
++++ b/src/node_options.h
+@@ -116,6 +116,7 @@ class EnvironmentOptions : public Options {
+   bool abort_on_uncaught_exception = false;
+   std::vector<std::string> conditions;
+   bool detect_module = true;
++  bool fork_node22 = false;
+   bool disable_sigusr1 = false;
+   bool print_required_tla = false;
+   bool require_module = true;

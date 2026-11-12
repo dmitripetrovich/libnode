@@ -15,9 +15,7 @@ end
 
 local function run(command)
         print(("> %s"):format(command))
-        if os.execute(command) ~= true then
-                error(("failed: %s"):format(command), 0)
-        end
+        if os.execute(command) ~= true then error(("failed: %s"):format(command), 0) end
 end
 
 local function sha256(file)
@@ -28,9 +26,7 @@ end
 local function find(dirs, name)
         for _, dir in ipairs(dirs) do
                 local file = path.join(src, dir, name)
-                if os.isfile(file) then
-                        return file
-                end
+                if os.isfile(file) then return file end
         end
         error(("no %s in %s under %s"):format(name, table.concat(dirs, ", "), src), 0)
 end
@@ -47,7 +43,11 @@ local function source()
         os.rmdir(src)
         local tar = windows and ("%s\\System32\\tar.exe"):format(os.getenv("SystemRoot")) or "tar"
         run(('%s -xzf "%s" -C "%s"'):format(tar, native(tarball), native(root)))
-        run(('%s "%s" "%s"'):format(windows and "python" or "python3", native(path.join(root, "patches", "patch.py")), native(src)))
+        local patches = os.matchfiles(path.join(root, "patches", "*.patch"))
+        table.sort(patches)
+        for _, patch in ipairs(patches) do
+                run(('git -C "%s" apply --directory="node-v%s" "%s"'):format(native(root), libnode.version, native(patch)))
+        end
 end
 
 local function build()
@@ -152,7 +152,7 @@ end
 
 newaction {
         trigger = "libnode",
-        description = ("Download, change and build Node %s as libnode22 into build/"):format(libnode.version),
+        description = "build",
         execute = function()
                 source()
                 build()
