@@ -18,31 +18,17 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 360
-    env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 5G
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install ccache and premake (Linux)
+      - name: Install premake (Linux)
         if: runner.os != 'Windows'
         run: |
-          sudo apt-get update && sudo apt-get install -y ccache
           mkdir -p "$HOME/bin"
           curl -fsSL "https://github.com/premake/premake-core/releases/download/v$PREMAKE/premake-$PREMAKE-linux.tar.gz" | tar -xz -C "$HOME/bin"
           chmod +x "$HOME/bin/premake5"
           echo "$HOME/bin" >> "$GITHUB_PATH"
-
-      - name: Cache ccache
-        if: runner.os != 'Windows'
-        uses: actions/cache@v4
-        with:
-          path: .ccache
-          key: ccache-linux-${{ hashFiles('libnode.lua', 'patches/**') }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-linux-${{ hashFiles('libnode.lua', 'patches/**') }}-
-            ccache-linux-
 
       - name: Install NASM
         if: runner.os == 'Windows'
