@@ -8,7 +8,9 @@ index 5b74045..fe3b222 100644
  EnvironmentOptionsParser::EnvironmentOptionsParser() {
 +  AddOption("--fork-node22", "", &EnvironmentOptions::fork_node22);
 +
-   AddOption("--conditions", "additional user conditions for conditional exports and imports", &EnvironmentOptions::conditions,
+   AddOption("--conditions",
+             "additional user conditions for conditional exports and imports",
+             &EnvironmentOptions::conditions,
 diff --git a/src/node_options.h b/src/node_options.h
 index c1bcc06..ac0dfef 100644
 --- a/src/node_options.h
