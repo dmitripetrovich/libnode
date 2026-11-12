@@ -1,0 +1,99 @@
+name: Build libnode
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  PREMAKE: 5.0.0-beta8
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64]
+        os: [ubuntu-24.04, windows-2022]
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 360
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 5G
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ccache and premake (Linux)
+        if: runner.os != 'Windows'
+        run: |
+          sudo apt-get update && sudo apt-get install -y ccache
+          mkdir -p "$HOME/bin"
+          curl -fsSL "https://github.com/premake/premake-core/releases/download/v$PREMAKE/premake-$PREMAKE-linux.tar.gz" | tar -xz -C "$HOME/bin"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Cache ccache
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-linux-${{ hashFiles('libnode.lua', 'patches/**') }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-${{ hashFiles('libnode.lua', 'patches/**') }}-
+            ccache-linux-
+
+      - name: Install NASM
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Install premake (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p "$HOME/premake"
+          curl -fsSL -o premake.zip "https://github.com/premake/premake-core/releases/download/v$PREMAKE/premake-$PREMAKE-windows.zip"
+          7z x -y -o"$HOME/premake" premake.zip > /dev/null
+          rm premake.zip
+          cygpath -w "$HOME/premake" >> "$GITHUB_PATH"
+
+      - name: Build libnode22.so
+        if: runner.os != 'Windows'
+        run: premake5 libnode
+
+      - name: Build libnode22.dll
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: premake5 libnode
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libnode-${{ runner.os }}-${{ matrix.arch }}
+          path: ./build
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ github.workspace }}/libnode-Windows-x64/libnode22.dll
+            ${{ github.workspace }}/libnode-Windows-x64/libnode22.lib
+            ${{ github.workspace }}/libnode-Windows-x64/libnode22.pdb
+            ${{ github.workspace }}/libnode-Windows-x64/vcruntime*.dll
+            ${{ github.workspace }}/libnode-Windows-x64/msvcp*.dll
+            ${{ github.workspace }}/libnode-Windows-x64/concrt*.dll
+            ${{ github.workspace }}/libnode-Linux-x64/libnode22.so
+
+      - name: Delete artifacts
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: libnode-*
