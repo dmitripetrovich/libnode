@@ -31,6 +31,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ccache
           mkdir -p "$HOME/bin"
           curl -fsSL "https://github.com/premake/premake-core/releases/download/v$PREMAKE/premake-$PREMAKE-linux.tar.gz" | tar -xz -C "$HOME/bin"
+          chmod +x "$HOME/bin/premake5"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
       - name: Cache ccache
