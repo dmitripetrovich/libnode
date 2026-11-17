@@ -69,7 +69,7 @@ local function build()
                 return
         end
         local jobs = (os.outputof("nproc") or ""):match("%d+") or "4"
-        run(('cd "%s" && CC=clang CXX=clang++ ./configure --shared --ninja %s && ninja -C out/Release -j%s %s'):format(src, flags, jobs, libnode.name))
+        run(('cd "%s" && CC=clang-20 CXX=clang++-20 ./configure --shared --ninja %s && ninja -C out/Release -j%s %s'):format(src, flags, jobs, libnode.name))
 end
 
 local function runtime(dll)

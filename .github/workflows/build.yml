@@ -32,7 +32,7 @@ jobs:
 
       - name: Install clang and ninja (Linux)
         if: runner.os != 'Windows'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang ninja-build
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-20 ninja-build
 
       - name: Install NASM
         if: runner.os == 'Windows'
