@@ -68,12 +68,8 @@ local function build()
                 run(('cd /d "%s" && set "config_flags=%s" && vcbuild.bat release x64 dll no-cctest'):format(native(src), flags))
                 return
         end
-        local compilers = ""
-        if (os.outputof("command -v ccache") or "") ~= "" then
-                compilers = "CC='ccache gcc' CXX='ccache g++' "
-        end
         local jobs = (os.outputof("nproc") or ""):match("%d+") or "4"
-        run(('cd "%s" && %s./configure --shared %s && %smake -j%s'):format(src, compilers, flags, compilers, jobs))
+        run(('cd "%s" && CC=clang CXX=clang++ ./configure --shared --ninja %s && ninja -C out/Release -j%s %s'):format(src, flags, jobs, libnode.name))
 end
 
 local function runtime(dll)
@@ -159,7 +155,11 @@ local function collect()
         else
                 os.rmdir(headers)
                 run(('cd "%s" && python3 tools/install.py install --headers-only --dest-dir "%s" --prefix / --silent'):format(src, headers))
-                os.rmdir(path.join(headers, "include/node/openssl"))
+                for _, folder in ipairs(os.matchdirs(path.join(headers, "include/node/openssl/archs/*"))) do
+                        if path.getname(folder) ~= "linux-x86_64" then
+                                os.rmdir(folder)
+                        end
+                end
                 local archive = ("%s-include.tar.gz"):format(libnode.name)
                 run(('tar -C "%s" --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 -cf - include | gzip -9n > "%s"'):format(headers, path.join(output, archive)))
                 os.rmdir(headers)
@@ -226,6 +226,8 @@ local function comments(old)
                 local s = line:match("^%s*(.-)%s*$")
                 pure[i] = inside or s:sub(1, 2) == "//" or s:sub(1, 2) == "/*"
                 local open = line:find("/*", 1, true)
+                local slash = line:find("//", 1, true)
+                if open and slash and slash < open then open = nil end
                 if inside then
                         inside = line:find("*/", 1, true) == nil
                 elseif open then

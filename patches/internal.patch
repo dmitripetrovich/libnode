@@ -1,0 +1,149 @@
+diff --git a/lib/internal/bootstrap/node.js b/lib/internal/bootstrap/node.js
+--- a/lib/internal/bootstrap/node.js
++++ b/lib/internal/bootstrap/node.js
+@@ -156,4 +156,4 @@
+ {
+-  process.dlopen = rawMethods.dlopen;
++  delete process.binding;
+   process.uptime = rawMethods.uptime;
+ 
+diff --git a/lib/internal/bootstrap/realm.js b/lib/internal/bootstrap/realm.js
+--- a/lib/internal/bootstrap/realm.js
++++ b/lib/internal/bootstrap/realm.js
+@@ -149,12 +149,4 @@
+     throw new Error(`No such module: ${module}`);
+   };
+-
+-  process._linkedBinding = function _linkedBinding(module) {
+-    module = String(module);
+-    let mod = bindingObj[module];
+-    if (typeof mod !== 'object')
+-      mod = bindingObj[module] = getLinkedBinding(module);
+-    return mod;
+-  };
+ }
+ 
+diff --git a/lib/internal/errors.js b/lib/internal/errors.js
+--- a/lib/internal/errors.js
++++ b/lib/internal/errors.js
+@@ -1212,6 +1212,7 @@
+ E('ERR_DIR_CONCURRENT_OPERATION',
+   'Cannot do synchronous work on directory handle with concurrent ' +
+   'asynchronous operations', Error);
++E('ERR_DLOPEN_DISABLED', 'Cannot load native addon because loading addons is disabled.', Error);
+ E('ERR_DNS_SET_SERVERS_FAILED', 'c-ares failed to set servers: "%s" [%s]',
+   Error);
+ E('ERR_DOMAIN_CALLBACK_NOT_AVAILABLE',
+diff --git a/lib/internal/modules/cjs/loader.js b/lib/internal/modules/cjs/loader.js
+--- a/lib/internal/modules/cjs/loader.js
++++ b/lib/internal/modules/cjs/loader.js
+@@ -196,6 +196,7 @@
+ 
+ const {
+   codes: {
++    ERR_DLOPEN_DISABLED,
+     ERR_INVALID_ARG_TYPE,
+     ERR_INVALID_ARG_VALUE,
+     ERR_INVALID_MODULE_SPECIFIER,
+@@ -2135,3 +2136,3 @@
+-  return process.dlopen(module, path.toNamespacedPath(filename));
++  throw new ERR_DLOPEN_DISABLED();
+ };
+ 
+@@ -2296,2 +2297,6 @@
+ Module.Module = Module;
+-Module.registerHooks = registerHooks;
++function registerHooksOnce(hooks) {
++  delete Module.registerHooks;
++  return registerHooks(hooks);
++}
++Module.registerHooks = registerHooksOnce;
+diff --git a/lib/internal/process/pre_execution.js b/lib/internal/process/pre_execution.js
+--- a/lib/internal/process/pre_execution.js
++++ b/lib/internal/process/pre_execution.js
+@@ -532,8 +532,5 @@
+ 
+ function setupDebugEnv() {
+   require('internal/util/debuglog').initializeDebugEnv(process.env.NODE_DEBUG);
+-  if (getOptionValue('--expose-internals')) {
+-    require('internal/bootstrap/realm').BuiltinModule.exposeInternals();
+-  }
+ }
+ 
+@@ -654,10 +651,6 @@
+   }
+ 
+   if (pendingDeprecation) {
+-    process.binding = deprecate(process.binding,
+-                                'process.binding() is deprecated. ' +
+-                                'Please use public APIs instead.', 'DEP0111');
+-
+     process._tickCallback = deprecate(process._tickCallback,
+                                       'process._tickCallback() is deprecated',
+                                       'DEP0134');
+@@ -722,4 +715,5 @@
+     ObjectFreeze(require('path'));
++    delete process.binding;
+     const { has, drop } = require('internal/process/permission');
+     const warnFlags = [
+       { flag: '--allow-addons', enabled: true, code: 'PERM0001' },
+diff --git a/lib/internal/vfs/setup.js b/lib/internal/vfs/setup.js
+--- a/lib/internal/vfs/setup.js
++++ b/lib/internal/vfs/setup.js
+@@ -1110,7 +1110,6 @@
+     new ReservedRootProvider(activeVFSLayers),
+     { __proto__: null, emitExperimentalWarning: false, [kReservedRoot]: true });
+   installModuleLoaderOverrides();
+-  installAddonLoader();
+   const { setVfsLibraryReader } = require('internal/ffi/vfs');
+   setVfsLibraryReader(readVirtualBinary);
+   vfsHandlerObj = createVfsHandlers();
+@@ -1132,7 +1131,6 @@
+   vfsHandlerObj = undefined;
+   const { setVfsLibraryReader } = require('internal/ffi/vfs');
+   setVfsLibraryReader(null);
+-  process.dlopen = originalDlopen;
+   hooksInstalled = false;
+ }
+ 
+diff --git a/lib/module.js b/lib/module.js
+--- a/lib/module.js
++++ b/lib/module.js
+@@ -6,7 +6,6 @@
+   setSourceMapsSupport,
+ } = require('internal/source_map/source_map_cache');
+ const { Module } = require('internal/modules/cjs/loader');
+-const { register } = require('internal/modules/esm/loader');
+ const {
+   SourceMap,
+ } = require('internal/source_map/source_map');
+@@ -21,7 +20,6 @@
+ } = require('internal/modules/package_json_reader');
+ const { stripTypeScriptTypes } = require('internal/modules/typescript');
+ 
+-Module.register = register;
+ Module.constants = constants;
+ Module.enableCompileCache = enableCompileCache;
+ Module.findPackageJSON = findPackageJSON;
+diff --git a/src/node_options.cc b/src/node_options.cc
+--- a/src/node_options.cc
++++ b/src/node_options.cc
+@@ -950,7 +950,6 @@
+             BOOL_FIELD(async_context_frame),
+             kAllowedInEnvvar,
+             true);
+-  AddOption("--expose-internals", "", BOOL_FIELD(expose_internals));
+   AddOption("--frozen-intrinsics",
+             "experimental frozen intrinsics support",
+             BOOL_FIELD(frozen_intrinsics),
+diff --git a/src/node_options.h b/src/node_options.h
+--- a/src/node_options.h
++++ b/src/node_options.h
+@@ -240,7 +240,6 @@
+   DEFINE_BOOL_FIELD(experimental_repl_await) = true;
+   DEFINE_BOOL_FIELD(experimental_vm_modules) = EXPERIMENTALS_DEFAULT_VALUE;
+   DEFINE_BOOL_FIELD(async_context_frame) = true;
+-  DEFINE_BOOL_FIELD(expose_internals) = false;
+   DEFINE_BOOL_FIELD(force_node_api_uncaught_exceptions_policy) = false;
+   DEFINE_BOOL_FIELD(frozen_intrinsics) = false;
+   DEFINE_BOOL_FIELD(network_family_autoselection) = true;
