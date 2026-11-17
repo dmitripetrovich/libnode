@@ -63,7 +63,7 @@ diff --git a/src/api/environment.cc b/src/api/environment.cc
 +#include <unordered_set>
  #if HAVE_OPENSSL
  #include "crypto/crypto_util.h"
-@@ -1222,4 +1225,40 @@
+@@ -1222,4 +1225,39 @@
      movedHandler(env, static_cast<int>(exit_code));
    });
  }
@@ -102,7 +102,6 @@ diff --git a/src/api/environment.cc b/src/api/environment.cc
 +  std::lock_guard<std::mutex> lock(NativeInterruptMutex());
 +  return NativeInterruptedIsolates().count(isolate) != 0;
 +}
-+
  
 diff --git a/src/crypto/crypto_dh.cc b/src/crypto/crypto_dh.cc
 --- a/src/crypto/crypto_dh.cc
@@ -208,7 +207,7 @@ diff --git a/src/crypto/crypto_pbkdf2.cc b/src/crypto/crypto_pbkdf2.cc
 +  uint32_t block = 1;
 +  while (ok && left > 0) {
 +    const unsigned char counter[4] = {
-+        static_cast<unsigned char>(block >> 24),cstatic_cast<unsigned char>(block >> 16), static_cast<unsigned char>(block >> 8), static_cast<unsigned char>(block)};
++        static_cast<unsigned char>(block >> 24), static_cast<unsigned char>(block >> 16), static_cast<unsigned char>(block >> 8), static_cast<unsigned char>(block)};
 +    size_t written = 0;
 +    ok = EVP_MAC_init(ctx, nullptr, 0, nullptr) == 1 && EVP_MAC_update(ctx, salt_data, salt.len) == 1 && EVP_MAC_update(ctx, counter, sizeof(counter)) == 1 && EVP_MAC_final(ctx, u, &written, sizeof(u)) == 1;
 +    memcpy(t, u, size);
