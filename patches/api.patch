@@ -1,0 +1,11 @@
+diff --git a/tools/install.py b/tools/install.py
+--- a/tools/install.py
++++ b/tools/install.py
+@@ -277,6 +277,7 @@
+       'include/v8-exception.h',
+       'include/v8-extension.h',
+       'include/v8-external.h',
++      'include/v8-fast-api-calls.h',
+       'include/v8-forward.h',
+       'include/v8-function-callback.h',
+       'include/v8-function.h',

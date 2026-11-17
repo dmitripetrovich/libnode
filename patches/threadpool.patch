@@ -1,0 +1,178 @@
+diff --git a/deps/uv/include/uv.h b/deps/uv/include/uv.h
+--- a/deps/uv/include/uv.h
++++ b/deps/uv/include/uv.h
+@@ -1199,5 +1199,7 @@
+ 
+ UV_EXTERN int uv_cancel(uv_req_t* req);
+ 
++UV_EXTERN uint64_t uv_threadpool_set_owner(uint64_t owner);
++UV_EXTERN void uv_threadpool_set_owner_cap(unsigned int cap);
+ 
+ struct uv_cpu_times_s {
+diff --git a/deps/uv/src/threadpool.c b/deps/uv/src/threadpool.c
+--- a/deps/uv/src/threadpool.c
++++ b/deps/uv/src/threadpool.c
+@@ -41,6 +41,23 @@
+ static struct uv__queue wq;
+ static struct uv__queue run_slow_work_message;
+ static struct uv__queue slow_io_pending_wq;
++static struct uv__queue owners;
++static unsigned int owner_cap;
++
++#if defined(_WIN32)
++static __declspec(thread) uint64_t current_owner;
++#else
++static __thread uint64_t current_owner;
++#endif
++
++struct uv__owner {
++  struct uv__work token;
++  struct uv__queue pending;
++  struct uv__queue link;
++  uint64_t id;
++  unsigned int running;
++  int queued;
++};
+ 
+ static unsigned int slow_work_thread_threshold(void) {
+   return (nthreads + 1) / 2;
+@@ -50,4 +67,56 @@
+   abort();
+ }
+ 
++static void uv__owner_token(struct uv__work* w) {
++  abort();
++}
++
++static unsigned int uv__owner_limit(void) {
++  if (owner_cap != 0)
++    return owner_cap;
++  return (nthreads + 1) / 2;
++}
++
++static struct uv__owner* uv__owner_find(uint64_t id) {
++  struct uv__queue* q;
++  struct uv__owner* owner;
++
++  uv__queue_foreach(q, &owners) {
++    owner = uv__queue_data(q, struct uv__owner, link);
++    if (owner->id == id)
++      return owner;
++  }
++
++  owner = uv__malloc(sizeof(*owner));
++  if (owner == NULL)
++    return NULL;
++  owner->token.work = uv__owner_token;
++  owner->token.done = NULL;
++  owner->token.loop = NULL;
++  uv__queue_init(&owner->token.wq);
++  uv__queue_init(&owner->pending);
++  owner->id = id;
++  owner->running = 0;
++  owner->queued = 0;
++  uv__queue_insert_tail(&owners, &owner->link);
++  return owner;
++}
++
++static void uv__owner_requeue(struct uv__owner* owner) {
++  if (owner->queued || uv__queue_empty(&owner->pending) ||
++      owner->running >= uv__owner_limit())
++    return;
++  owner->queued = 1;
++  uv__queue_insert_tail(&wq, &owner->token.wq);
++  if (idle_threads > 0)
++    uv_cond_signal(&cond);
++}
++
++static void uv__owner_release(struct uv__owner* owner) {
++  if (owner->queued || owner->running != 0 ||
++      !uv__queue_empty(&owner->pending))
++    return;
++  uv__queue_remove(&owner->link);
++  uv__free(owner);
++}
+ 
+@@ -57,6 +126,7 @@
+ static void worker(void* arg) {
+   struct uv__work* w;
+   struct uv__queue* q;
++  struct uv__owner* owner;
+   int is_slow_work;
+ 
+   uv_thread_setname("libuv-worker");
+@@ -90,3 +160,18 @@
+ 
+     is_slow_work = 0;
++    owner = NULL;
++    if (q != &run_slow_work_message &&
++        uv__queue_data(q, struct uv__work, wq)->work == uv__owner_token) {
++      owner = container_of(uv__queue_data(q, struct uv__work, wq), struct uv__owner, token);
++      owner->queued = 0;
++      if (uv__queue_empty(&owner->pending)) {
++        uv__owner_release(owner);
++        continue;
++      }
++      q = uv__queue_head(&owner->pending);
++      uv__queue_remove(q);
++      uv__queue_init(q);
++      owner->running++;
++      uv__owner_requeue(owner);
++    }
+     if (q == &run_slow_work_message) {
+@@ -137,5 +222,10 @@
+       slow_io_work_running--;
+     }
++    if (owner != NULL) {
++      owner->running--;
++      uv__owner_requeue(owner);
++      uv__owner_release(owner);
++    }
+   }
+ }
+ 
+@@ -152,6 +242,19 @@
+       return;
+     }
+     q = &run_slow_work_message;
++  } else if (current_owner != 0 && q != &exit_message) {
++    struct uv__owner* owner;
++
++    owner = uv__owner_find(current_owner);
++    if (owner != NULL) {
++      uv__queue_insert_tail(&owner->pending, q);
++      if (owner->queued || owner->running >= uv__owner_limit()) {
++        uv_mutex_unlock(&mutex);
++        return;
++      }
++      owner->queued = 1;
++      q = &owner->token.wq;
++    }
+   }
+ 
+   uv__queue_insert_tail(&wq, q);
+@@ -234,6 +337,7 @@
+   uv__queue_init(&wq);
+   uv__queue_init(&slow_io_pending_wq);
+   uv__queue_init(&run_slow_work_message);
++  uv__queue_init(&owners);
+ 
+   if (uv_sem_init(&sem, 0))
+     abort();
+@@ -292,3 +396,16 @@
++uint64_t uv_threadpool_set_owner(uint64_t owner) {
++  uint64_t previous;
++  previous = current_owner;
++  current_owner = owner;
++  return previous;
++}
++
++void uv_threadpool_set_owner_cap(unsigned int cap) {
++  uv_once(&once, init_once);
++  uv_mutex_lock(&mutex);
++  owner_cap = cap;
++  uv_mutex_unlock(&mutex);
++}
+ static int uv__work_cancel(uv_loop_t* loop, uv_req_t* req, struct uv__work* w) {
+   int cancelled;
+ 

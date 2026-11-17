@@ -1,0 +1,562 @@
+diff --git a/deps/ncrypto/ncrypto.cc b/deps/ncrypto/ncrypto.cc
+--- a/deps/ncrypto/ncrypto.cc
++++ b/deps/ncrypto/ncrypto.cc
+@@ -1,4 +1,5 @@
+ #include "ncrypto.h"
++#include <atomic>
+ #include <openssl/asn1.h>
+ #include <openssl/bn.h>
+ #include <openssl/dh.h>
+@@ -6714,6 +6715,7 @@
+ 
+ EVPKeyPointer EVPKeyCtxPointer::paramgen() const {
+   if (!ctx_) return {};
++  WatchGeneration(ctx_.get());
+   EVP_PKEY* key = nullptr;
+   if (EVP_PKEY_paramgen(ctx_.get(), &key) != 1) return {};
+   return EVPKeyPointer(key);
+@@ -8791,1 +8793,25 @@
++namespace {
++std::atomic<bool (*)()> generation_check{nullptr};
++
++#ifndef OPENSSL_IS_BORINGSSL
++int GenerationCallback(EVP_PKEY_CTX*) {
++  return GenerationProceeds() ? 1 : 0;
++}
++#endif
++}
++
++void SetGenerationCheck(bool (*check)()) {
++  generation_check.store(check);
++}
++
++bool GenerationProceeds() {
++  bool (*check)() = generation_check.load();
++  return check == nullptr || check();
++}
++
++void WatchGeneration(EVP_PKEY_CTX* ctx) {
++#ifndef OPENSSL_IS_BORINGSSL
++  if (ctx != nullptr) EVP_PKEY_CTX_set_cb(ctx, GenerationCallback);
++#endif
++}
+ 
+diff --git a/deps/ncrypto/ncrypto.h b/deps/ncrypto/ncrypto.h
+--- a/deps/ncrypto/ncrypto.h
++++ b/deps/ncrypto/ncrypto.h
+@@ -2319,3 +2319,7 @@
++void SetGenerationCheck(bool (*check)());
++bool GenerationProceeds();
++void WatchGeneration(EVP_PKEY_CTX* ctx);
++
+ #define NCRYPTO_VERSION "0.0.1"
+ 
+ enum {
+diff --git a/src/api/environment.cc b/src/api/environment.cc
+--- a/src/api/environment.cc
++++ b/src/api/environment.cc
+@@ -1,1 +1,2 @@
++#include <atomic>
+ #include <cstdlib>
+@@ -2,2 +3,4 @@
++#include <mutex>
++#include <unordered_set>
+ #if HAVE_OPENSSL
+ #include "crypto/crypto_util.h"
+@@ -1222,4 +1225,40 @@
+     movedHandler(env, static_cast<int>(exit_code));
+   });
+ }
++namespace {
++
++std::atomic<size_t> native_interrupt_count{0};
++
++std::mutex& NativeInterruptMutex() {
++  static std::mutex* mutex = new std::mutex();
++  return *mutex;
++}
++
++std::unordered_set<v8::Isolate*>& NativeInterruptedIsolates() {
++  static std::unordered_set<v8::Isolate*>* isolates =
++      new std::unordered_set<v8::Isolate*>();
++  return *isolates;
++}
++
++}
++
++void InterruptNativeWork(v8::Isolate* isolate, bool interrupted) {
++  std::lock_guard<std::mutex> lock(NativeInterruptMutex());
++  if (interrupted) {
++    if (NativeInterruptedIsolates().insert(isolate).second) {
++      native_interrupt_count++;
++    }
++  } else if (NativeInterruptedIsolates().erase(isolate) != 0) {
++    native_interrupt_count--;
++  }
++}
++
++bool IsNativeWorkInterrupted(v8::Isolate* isolate) {
++  if (native_interrupt_count.load(std::memory_order_relaxed) == 0) {
++    return false;
++  }
++  std::lock_guard<std::mutex> lock(NativeInterruptMutex());
++  return NativeInterruptedIsolates().count(isolate) != 0;
++}
++
+ 
+diff --git a/src/crypto/crypto_dh.cc b/src/crypto/crypto_dh.cc
+--- a/src/crypto/crypto_dh.cc
++++ b/src/crypto/crypto_dh.cc
+@@ -147,6 +147,7 @@
+       return ThrowCryptoError(env, ERR_get_error(), "Invalid generator");
+     }
+ 
++    SyncWorkScope sync_work(env);
+     auto dh = DHPointer::New(bits, generator);
+     if (!dh) {
+       return THROW_ERR_INVALID_ARG_VALUE(env, "Invalid DH parameters");
+diff --git a/src/crypto/crypto_keygen.cc b/src/crypto/crypto_keygen.cc
+--- a/src/crypto/crypto_keygen.cc
++++ b/src/crypto/crypto_keygen.cc
+@@ -8,6 +8,7 @@
+ #include "threadpoolwork-inl.h"
+ #include "v8.h"
+ 
++#include <algorithm>
+ #include <cmath>
+ #include <string_view>
+ 
+@@ -93,10 +94,15 @@
+ KeyGenJobStatus SecretKeyGenTraits::DoKeyGen(Environment* env,
+                                              SecretKeyGenConfig* params) {
+   auto bytes = DataPointer::Alloc(params->length);
+-  if (!ncrypto::CSPRNG(static_cast<unsigned char*>(bytes.get()),
+-                       params->length)) {
+-    return KeyGenJobStatus::FAILED;
+-  }
++  unsigned char* data = static_cast<unsigned char*>(bytes.get());
++  size_t done = 0;
++  do {
++    size_t take = std::min<size_t>(params->length - done, 1024 * 1024);
++    if (!SyncWorkProceeds() || !ncrypto::CSPRNG(data + done, take)) {
++      return KeyGenJobStatus::FAILED;
++    }
++    done += take;
++  } while (done < params->length);
+   params->out = ByteSource::Allocated(bytes.release());
+   if (params->truncate_to_bit_length)
+     TruncateToBitLength(params->length_bits, &params->out);
+diff --git a/src/crypto/crypto_keygen.h b/src/crypto/crypto_keygen.h
+--- a/src/crypto/crypto_keygen.h
++++ b/src/crypto/crypto_keygen.h
+@@ -261,4 +261,5 @@
+     EVP_PKEY* pkey = nullptr;
++    ncrypto::WatchGeneration(ctx.get());
+     if (!EVP_PKEY_keygen(ctx.get(), &pkey))
+       return KeyGenJobStatus::FAILED;
+ 
+diff --git a/src/crypto/crypto_pbkdf2.cc b/src/crypto/crypto_pbkdf2.cc
+--- a/src/crypto/crypto_pbkdf2.cc
++++ b/src/crypto/crypto_pbkdf2.cc
+@@ -9,5 +9,12 @@
+ #include "threadpoolwork-inl.h"
+ #include "v8.h"
+ 
++#include <openssl/core_names.h>
++#include <openssl/evp.h>
++#include <openssl/params.h>
++#include <algorithm>
++#include <climits>
++#include <cstring>
++
+ namespace node {
+ 
+@@ -14,3 +21,4 @@
++using ncrypto::DataPointer;
+ using ncrypto::Digest;
+ using v8::FunctionCallbackInfo;
+ using v8::Int32;
+@@ -113,6 +121,61 @@
+   return JustVoid();
+ }
+ 
++namespace {
++DataPointer Pbkdf2Interruptible(const ncrypto::Digest& digest, const ncrypto::Buffer<const char>& pass, const ncrypto::Buffer<const unsigned char>& salt, uint32_t iterations, size_t length) {
++  const EVP_MD* md = digest;
++  if (md == nullptr || iterations == 0 || pass.len > INT_MAX ||
++      salt.len > INT_MAX || length > INT_MAX) {
++    return {};
++  }
++  const char* md_name = EVP_MD_get0_name(md);
++  int size = EVP_MD_get_size(md);
++  if (md_name == nullptr || size <= 0) return {};
++  auto dp = DataPointer::Alloc(length);
++  if (!dp) return {};
++  EVP_MAC* mac = EVP_MAC_fetch(nullptr, OSSL_MAC_NAME_HMAC, nullptr);
++  EVP_MAC_CTX* ctx = mac == nullptr ? nullptr : EVP_MAC_CTX_new(mac);
++  static const unsigned char empty = 0;
++  const unsigned char* key = pass.data == nullptr ? &empty : reinterpret_cast<const unsigned char*>(pass.data);
++  const unsigned char* salt_data = salt.data == nullptr ? &empty : salt.data;
++  OSSL_PARAM params[] = {
++      OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(md_name), 0), OSSL_PARAM_construct_end(),
++  };
++  bool ok = ctx != nullptr && EVP_MAC_init(ctx, key, pass.len, params) == 1;
++  unsigned char* out = dp.get<unsigned char>();
++  unsigned char u[EVP_MAX_MD_SIZE];
++  unsigned char t[EVP_MAX_MD_SIZE];
++  size_t left = length;
++  uint32_t block = 1;
++  while (ok && left > 0) {
++    const unsigned char counter[4] = {
++        static_cast<unsigned char>(block >> 24),cstatic_cast<unsigned char>(block >> 16), static_cast<unsigned char>(block >> 8), static_cast<unsigned char>(block)};
++    size_t written = 0;
++    ok = EVP_MAC_init(ctx, nullptr, 0, nullptr) == 1 && EVP_MAC_update(ctx, salt_data, salt.len) == 1 && EVP_MAC_update(ctx, counter, sizeof(counter)) == 1 && EVP_MAC_final(ctx, u, &written, sizeof(u)) == 1;
++    memcpy(t, u, size);
++    for (uint32_t i = 1; ok && i < iterations; i++) {
++      if ((i & 1023) == 0 && !SyncWorkProceeds()) {
++        ok = false;
++        break;
++      }
++      ok = EVP_MAC_init(ctx, nullptr, 0, nullptr) == 1 && EVP_MAC_update(ctx, u, size) == 1 && EVP_MAC_final(ctx, u, &written, sizeof(u)) == 1;
++      for (int k = 0; k < size; k++) t[k] ^= u[k];
++    }
++    size_t take = std::min<size_t>(left, size);
++    memcpy(out, t, take);
++    out += take;
++    left -= take;
++    block++;
++  }
++  OPENSSL_cleanse(u, sizeof(u));
++  OPENSSL_cleanse(t, sizeof(t));
++  EVP_MAC_CTX_free(ctx);
++  EVP_MAC_free(mac);
++  if (!ok) return {};
++  return dp;
++}
++}
++
+ bool PBKDF2Traits::DeriveBits(Environment* env,
+                               const PBKDF2Config& params,
+                               ByteSource* out,
+@@ -125,14 +188,11 @@
+       .len = params.key ? params.key.GetSymmetricKeySize() : params.pass.size(),
+   };
+ 
+-  auto dp = ncrypto::pbkdf2(params.digest,
+-                            pass,
+-                            ncrypto::Buffer<const unsigned char>{
+-                                .data = params.salt.data<unsigned char>(),
+-                                .len = params.salt.size(),
+-                            },
+-                            params.iterations,
+-                            params.length);
++  const ncrypto::Buffer<const unsigned char> salt{
++      .data = params.salt.data<unsigned char>(),
++      .len = params.salt.size(),
++  };
++  auto dp = mode == kCryptoJobSync ? Pbkdf2Interruptible(params.digest, pass, salt, params.iterations, params.length) : ncrypto::pbkdf2(params.digest, pass, salt, params.iterations, params.length);
+ 
+   if (!dp) {
+     errors->Capture();
+diff --git a/src/crypto/crypto_random.cc b/src/crypto/crypto_random.cc
+--- a/src/crypto/crypto_random.cc
++++ b/src/crypto/crypto_random.cc
+@@ -37,3 +37,5 @@
+-  return [env](int a, int b) -> bool { return !env->is_stopping(); };
++  return [env](int a, int b) -> bool {
++    return !env->is_stopping() && SyncWorkProceeds();
++  };
+ }
+ 
+diff --git a/src/crypto/crypto_scrypt.cc b/src/crypto/crypto_scrypt.cc
+--- a/src/crypto/crypto_scrypt.cc
++++ b/src/crypto/crypto_scrypt.cc
+@@ -7,5 +7,11 @@
+ #include "threadpoolwork-inl.h"
+ #include "v8.h"
+ 
++#include <openssl/evp.h>
++#include <climits>
++#include <cstdlib>
++#include <cstring>
++#include <utility>
++
+ namespace node {
+ 
+@@ -12,3 +18,4 @@
++using ncrypto::DataPointer;
+ using v8::FunctionCallbackInfo;
+ using v8::Int32;
+ using v8::JustVoid;
+@@ -104,6 +111,135 @@
+   return JustVoid();
+ }
+ 
++namespace {
++inline uint32_t Rotl(uint32_t value, int bits) {
++  return (value << bits) | (value >> (32 - bits));
++}
++
++void Salsa208(uint32_t* block) {
++  uint32_t x[16];
++  memcpy(x, block, sizeof(x));
++  for (int round = 0; round < 8; round += 2) {
++    x[4] ^= Rotl(x[0] + x[12], 7);
++    x[8] ^= Rotl(x[4] + x[0], 9);
++    x[12] ^= Rotl(x[8] + x[4], 13);
++    x[0] ^= Rotl(x[12] + x[8], 18);
++    x[9] ^= Rotl(x[5] + x[1], 7);
++    x[13] ^= Rotl(x[9] + x[5], 9);
++    x[1] ^= Rotl(x[13] + x[9], 13);
++    x[5] ^= Rotl(x[1] + x[13], 18);
++    x[14] ^= Rotl(x[10] + x[6], 7);
++    x[2] ^= Rotl(x[14] + x[10], 9);
++    x[6] ^= Rotl(x[2] + x[14], 13);
++    x[10] ^= Rotl(x[6] + x[2], 18);
++    x[3] ^= Rotl(x[15] + x[11], 7);
++    x[7] ^= Rotl(x[3] + x[15], 9);
++    x[11] ^= Rotl(x[7] + x[3], 13);
++    x[15] ^= Rotl(x[11] + x[7], 18);
++    x[1] ^= Rotl(x[0] + x[3], 7);
++    x[2] ^= Rotl(x[1] + x[0], 9);
++    x[3] ^= Rotl(x[2] + x[1], 13);
++    x[0] ^= Rotl(x[3] + x[2], 18);
++    x[6] ^= Rotl(x[5] + x[4], 7);
++    x[7] ^= Rotl(x[6] + x[5], 9);
++    x[4] ^= Rotl(x[7] + x[6], 13);
++    x[5] ^= Rotl(x[4] + x[7], 18);
++    x[11] ^= Rotl(x[10] + x[9], 7);
++    x[8] ^= Rotl(x[11] + x[10], 9);
++    x[9] ^= Rotl(x[8] + x[11], 13);
++    x[10] ^= Rotl(x[9] + x[8], 18);
++    x[12] ^= Rotl(x[15] + x[14], 7);
++    x[13] ^= Rotl(x[12] + x[15], 9);
++    x[14] ^= Rotl(x[13] + x[12], 13);
++    x[15] ^= Rotl(x[14] + x[13], 18);
++  }
++  for (int i = 0; i < 16; i++) block[i] += x[i];
++}
++
++void BlockMix(const uint32_t* in, uint32_t* out, uint64_t r) {
++  uint32_t x[16];
++  memcpy(x, in + (2 * r - 1) * 16, sizeof(x));
++  for (uint64_t i = 0; i < 2 * r; i++) {
++    for (int k = 0; k < 16; k++) x[k] ^= in[i * 16 + k];
++    Salsa208(x);
++    memcpy(out + ((i & 1) * r + i / 2) * 16, x, sizeof(x));
++  }
++}
++
++bool RoMix(uint32_t* block, uint64_t r, uint64_t n, uint32_t* v, uint32_t* x, uint32_t* y) {
++  const size_t words = 32 * r;
++  memcpy(x, block, words * sizeof(uint32_t));
++  for (uint64_t i = 0; i < n; i++) {
++    if ((i & 1023) == 0 && !SyncWorkProceeds()) return false;
++    memcpy(v + i * words, x, words * sizeof(uint32_t));
++    BlockMix(x, y, r);
++    std::swap(x, y);
++  }
++  for (uint64_t i = 0; i < n; i++) {
++    if ((i & 1023) == 0 && !SyncWorkProceeds()) return false;
++    const uint32_t* last = x + (2 * r - 1) * 16;
++    uint64_t j = (static_cast<uint64_t>(last[0]) | (static_cast<uint64_t>(last[1]) << 32)) & (n - 1);
++    const uint32_t* row = v + j * words;
++    for (size_t k = 0; k < words; k++) x[k] ^= row[k];
++    BlockMix(x, y, r);
++    std::swap(x, y);
++  }
++  memcpy(block, x, words * sizeof(uint32_t));
++  return true;
++}
++
++DataPointer ScryptInterruptible(const ScryptConfig& params) {
++  const uint64_t r = params.r;
++  const uint64_t p = params.p;
++  const uint64_t n = params.N;
++  const size_t length = static_cast<size_t>(params.length);
++  if (params.pass.size() > INT_MAX || params.salt.size() > INT_MAX ||
++      r == 0 || p == 0 || n < 2 || (n & (n - 1)) != 0) {
++    return {};
++  }
++  const size_t words = 32 * r;
++  const size_t bytes = 128 * r * p;
++  if (bytes > INT_MAX) return {};
++  auto dp = DataPointer::Alloc(length);
++  unsigned char* b = static_cast<unsigned char*>(malloc(bytes));
++  uint32_t* w = static_cast<uint32_t*>(malloc(bytes));
++  uint32_t* v = static_cast<uint32_t*>(malloc(n * words * sizeof(uint32_t)));
++  uint32_t* xy = static_cast<uint32_t*>(malloc(2 * words * sizeof(uint32_t)));
++  bool ok = dp && b != nullptr && w != nullptr && v != nullptr && xy != nullptr;
++  static const unsigned char empty = 0;
++  const char* pass = params.pass.size() == 0 ? reinterpret_cast<const char*>(&empty) : params.pass.data<char>();
++  const unsigned char* salt = params.salt.size() == 0 ? &empty : params.salt.data<unsigned char>();
++  ok = ok && PKCS5_PBKDF2_HMAC(pass, static_cast<int>(params.pass.size()), salt, static_cast<int>(params.salt.size()), 1, EVP_sha256(), static_cast<int>(bytes), b) == 1;
++  if (ok) {
++    for (size_t i = 0; i < bytes / 4; i++) {
++      w[i] = static_cast<uint32_t>(b[4 * i]) | (static_cast<uint32_t>(b[4 * i + 1]) << 8) | (static_cast<uint32_t>(b[4 * i + 2]) << 16) | (static_cast<uint32_t>(b[4 * i + 3]) << 24);
++    }
++    for (uint64_t i = 0; ok && i < p; i++) {
++      ok = RoMix(w + i * words, r, n, v, xy, xy + words);
++    }
++  }
++  if (ok) {
++    for (size_t i = 0; i < bytes / 4; i++) {
++      b[4 * i] = static_cast<unsigned char>(w[i]);
++      b[4 * i + 1] = static_cast<unsigned char>(w[i] >> 8);
++      b[4 * i + 2] = static_cast<unsigned char>(w[i] >> 16);
++      b[4 * i + 3] = static_cast<unsigned char>(w[i] >> 24);
++    }
++    ok = PKCS5_PBKDF2_HMAC(pass, static_cast<int>(params.pass.size()), b, static_cast<int>(bytes), 1, EVP_sha256(), static_cast<int>(length), dp.get<unsigned char>()) == 1;
++  }
++  if (b != nullptr) OPENSSL_cleanse(b, bytes);
++  if (w != nullptr) OPENSSL_cleanse(w, bytes);
++  if (v != nullptr) OPENSSL_cleanse(v, n * words * sizeof(uint32_t));
++  if (xy != nullptr) OPENSSL_cleanse(xy, 2 * words * sizeof(uint32_t));
++  free(b);
++  free(w);
++  free(v);
++  free(xy);
++  if (!ok) return {};
++  return dp;
++}
++}
++
+ bool ScryptTraits::DeriveBits(Environment* env,
+                               const ScryptConfig& params,
+                               ByteSource* out,
+@@ -116,7 +252,7 @@
+     return true;
+   }
+ 
+-  auto dp = ncrypto::scrypt(
++  auto dp = mode == kCryptoJobSync ? ScryptInterruptible(params) : ncrypto::scrypt(
+       ncrypto::Buffer<const char>{
+           .data = params.pass.data<char>(),
+           .len = params.pass.size(),
+diff --git a/src/crypto/crypto_util.cc b/src/crypto/crypto_util.cc
+--- a/src/crypto/crypto_util.cc
++++ b/src/crypto/crypto_util.cc
+@@ -498,6 +498,24 @@
+   return ncrypto::isFipsEnabled();
+ }
+ 
++namespace {
++  thread_local Environment* sync_work_env = nullptr;
++}
++
++bool SyncWorkProceeds() {
++  Environment* env = sync_work_env;
++  return env == nullptr ||
++         (!env->is_stopping() && !IsNativeWorkInterrupted(env->isolate()));
++}
++
++SyncWorkScope::SyncWorkScope(Environment* env) : previous_(sync_work_env) {
++  sync_work_env = env;
++}
++
++SyncWorkScope::~SyncWorkScope() {
++  sync_work_env = previous_;
++}
++
+ void InitCryptoOnce() {
+   Mutex::ScopedLock lock(per_process::cli_options_mutex);
+   Mutex::ScopedLock fips_lock(fips_mutex);
+@@ -504,3 +522,4 @@
++  ncrypto::SetGenerationCheck(SyncWorkProceeds);
+ #ifndef OPENSSL_IS_BORINGSSL
+   OPENSSL_INIT_SETTINGS* settings = OPENSSL_INIT_new();
+   CHECK_NOT_NULL(settings);
+diff --git a/src/crypto/crypto_util.h b/src/crypto/crypto_util.h
+--- a/src/crypto/crypto_util.h
++++ b/src/crypto/crypto_util.h
+@@ -297,6 +297,19 @@
+ CryptoJobMode GetCryptoJobMode(v8::Local<v8::Value> args);
+ bool IsCryptoJobAsync(CryptoJobMode mode);
+ 
++bool SyncWorkProceeds();
++
++class SyncWorkScope final {
++ public:
++  explicit SyncWorkScope(Environment* env);
++  ~SyncWorkScope();
++  SyncWorkScope(const SyncWorkScope&) = delete;
++  SyncWorkScope& operator=(const SyncWorkScope&) = delete;
++
++ private:
++  Environment* previous_;
++};
++
+ struct CShakeOptions final : public MemoryRetainer {
+   enum Flag : uint8_t {
+     kFunctionName = 1 << 0,
+@@ -478,7 +491,10 @@
+ 
+     v8::Local<v8::Value> ret[2];
+     env->PrintSyncTrace();
+-    job->DoThreadPoolWork();
++    {
++      SyncWorkScope sync_work(env);
++      job->DoThreadPoolWork();
++    }
+     if (job->ToResult(&ret[0], &ret[1]).IsJust()) {
+       CHECK(!ret[0].IsEmpty());
+       CHECK(!ret[1].IsEmpty());
+diff --git a/src/node.h b/src/node.h
+--- a/src/node.h
++++ b/src/node.h
+@@ -301,3 +301,6 @@
+ NODE_EXTERN int Stop(Environment* env,
+                      StopFlags::Flags flags = StopFlags::kNoFlags);
++
++NODE_EXTERN void InterruptNativeWork(v8::Isolate* isolate, bool interrupted);
++NODE_EXTERN bool IsNativeWorkInterrupted(v8::Isolate* isolate);
+ 
+diff --git a/src/node_zlib.cc b/src/node_zlib.cc
+--- a/src/node_zlib.cc
++++ b/src/node_zlib.cc
+@@ -607,5 +607,5 @@
+       AsyncWrap::env()->PrintSyncTrace();
+-      DoThreadPoolWork();
++      WriteSliced(flush, in, in_len, out, out_len);
+       if (CheckError()) {
+         UpdateWriteResult();
+         write_in_progress_ = false;
+@@ -620,5 +620,38 @@
+ 
+   void UpdateWriteResult() {
+     ctx_.GetAfterWriteOffsets(&write_result_[1], &write_result_[0]);
++  }
++
++  void WriteSliced(uint32_t flush, const char* in, uint32_t in_len, char* out, uint32_t out_len) {
++    constexpr uint32_t kInSlice = 64 * 1024;
++    constexpr uint32_t kOutSlice = 1024 * 1024;
++    Environment* env = AsyncWrap::env();
++    for (;;) {
++      const uint32_t in_take = std::min(in_len, kInSlice);
++      const uint32_t out_take = std::min(out_len, kOutSlice);
++      const bool last = in_take == in_len;
++      ctx_.SetBuffers(in, in_take, out, out_take);
++      ctx_.SetFlush(last ? flush : 0);
++      DoThreadPoolWork();
++      uint32_t in_left = 0;
++      uint32_t out_left = 0;
++      ctx_.GetAfterWriteOffsets(&in_left, &out_left);
++      const uint32_t consumed = in_take - in_left;
++      const uint32_t produced = out_take - out_left;
++      in += consumed;
++      in_len -= consumed;
++      out += produced;
++      out_len -= produced;
++      if (ctx_.GetErrorInfo().IsError() || env->is_stopping() || IsNativeWorkInterrupted(env->isolate()) || (consumed == 0 && produced == 0)) {
++        break;
++      }
++      if (out_left == 0) {
++        if (out_len == 0) break;
++        continue;
++      }
++      if (in_left != 0 || last) break;
++    }
++    ctx_.SetBuffers(in, in_len, out, out_len);
++    ctx_.SetFlush(flush);
+   }
+ 

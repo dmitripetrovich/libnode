@@ -1,0 +1,85 @@
+diff --git a/node.gyp b/node.gyp
+--- a/node.gyp
++++ b/node.gyp
+@@ -175,7 +175,6 @@
+       'src/node_url_pattern.cc',
+       'src/node_util.cc',
+       'src/node_v8.cc',
+-      'src/node_wasi.cc',
+       'src/node_wasm_web_api.cc',
+       'src/node_watchdog.cc',
+       'src/node_worker.cc',
+@@ -304,7 +303,6 @@
+       'src/node_version.h',
+       'src/node_v8.h',
+       'src/node_v8_platform-inl.h',
+-      'src/node_wasi.h',
+       'src/node_watchdog.h',
+       'src/node_worker.h',
+       'src/path.h',
+@@ -1320,10 +1318,6 @@
+             'deps/nbytes/nbytes.gyp:nbytes',
+           ],
+         }],
+-        [ 'node_shared_uvwasi=="false"', {
+-          'dependencies': [ 'deps/uvwasi/uvwasi.gyp:uvwasi' ],
+-          'include_dirs': [ 'deps/uvwasi/include' ],
+-        }],
+         ['OS=="linux" or OS=="openharmony"', {
+           'ldflags': [ '-fsanitize=fuzzer' ]
+         }],
+diff --git a/node.gypi b/node.gypi
+--- a/node.gypi
++++ b/node.gypi
+@@ -224,10 +224,6 @@
+           ],
+         }],
+       ],
+-    }],
+-
+-    [ 'node_shared_uvwasi=="false"', {
+-      'dependencies': [ 'deps/uvwasi/uvwasi.gyp:uvwasi' ],
+     }],
+ 
+     [ 'node_shared_nghttp2=="false"', {
+diff --git a/src/node_binding.cc b/src/node_binding.cc
+--- a/src/node_binding.cc
++++ b/src/node_binding.cc
+@@ -110,7 +110,6 @@
+   V(util)                                                                      \
+   V(uv)                                                                        \
+   V(v8)                                                                        \
+-  V(wasi)                                                                      \
+   V(wasm_web_api)                                                              \
+   V(watchdog)                                                                  \
+   V(worker)                                                                    \
+diff --git a/src/node_metadata.cc b/src/node_metadata.cc
+--- a/src/node_metadata.cc
++++ b/src/node_metadata.cc
+@@ -21,7 +21,6 @@
+ #include "undici_version.h"
+ #include "util.h"
+ #include "uv.h"
+-#include "uvwasi.h"
+ #include "v8.h"
+ #include "zstd.h"
+ 
+@@ -143,7 +142,6 @@
+ 
+   acorn = ACORN_VERSION;
+   merve = MERVE_VERSION;
+-  uvwasi = UVWASI_VERSION_STRING;
+   zstd = ZSTD_VERSION_STRING;
+ 
+ #ifndef NODE_SHARED_BUILTIN_AMARO_DIST_INDEX_PATH
+diff --git a/src/node_metadata.h b/src/node_metadata.h
+--- a/src/node_metadata.h
++++ b/src/node_metadata.h
+@@ -54,7 +54,6 @@
+   V(nghttp2)                                                                   \
+   V(napi)                                                                      \
+   V(llhttp)                                                                    \
+-  V(uvwasi)                                                                    \
+   V(acorn)                                                                     \
+   V(simdjson)                                                                  \
+   V(simdutf)                                                                   \

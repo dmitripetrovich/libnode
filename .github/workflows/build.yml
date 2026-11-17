@@ -44,11 +44,11 @@ jobs:
           rm premake.zip
           cygpath -w "$HOME/premake" >> "$GITHUB_PATH"
 
-      - name: Build libnode22.so
+      - name: Build libnode26.so
         if: runner.os != 'Windows'
         run: premake5 libnode
 
-      - name: Build libnode22.dll
+      - name: Build libnode26.dll
         if: runner.os == 'Windows'
         shell: cmd
         run: premake5 libnode
@@ -72,13 +72,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ github.workspace }}/libnode-Windows-x64/libnode22.dll
-            ${{ github.workspace }}/libnode-Windows-x64/libnode22.lib
-            ${{ github.workspace }}/libnode-Windows-x64/libnode22.pdb
+            ${{ github.workspace }}/libnode-Windows-x64/libnode26.dll
+            ${{ github.workspace }}/libnode-Windows-x64/libnode26.lib
+            ${{ github.workspace }}/libnode-Windows-x64/libnode26.pdb
             ${{ github.workspace }}/libnode-Windows-x64/vcruntime*.dll
             ${{ github.workspace }}/libnode-Windows-x64/msvcp*.dll
             ${{ github.workspace }}/libnode-Windows-x64/concrt*.dll
-            ${{ github.workspace }}/libnode-Linux-x64/libnode22.so
+            ${{ github.workspace }}/libnode-Linux-x64/libnode26.so
+            ${{ github.workspace }}/libnode-Linux-x64/libnode26-include.tar.gz
 
       - name: Delete artifacts
         uses: geekyeggo/delete-artifact@v5

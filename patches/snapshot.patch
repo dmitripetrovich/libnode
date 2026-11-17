@@ -1,0 +1,60 @@
+diff --git a/lib/internal/options.js b/lib/internal/options.js
+--- a/lib/internal/options.js
++++ b/lib/internal/options.js
+@@ -196,6 +196,7 @@
+ 
+ function refreshOptions() {
+   optionsDict = undefined;
++  embedderOptions = undefined;
+ }
+ 
+ function getOptionValue(optionName) {
+diff --git a/src/api/embed_helpers.cc b/src/api/embed_helpers.cc
+--- a/src/api/embed_helpers.cc
++++ b/src/api/embed_helpers.cc
+@@ -203,5 +203,5 @@
+   uint64_t env_flags =
+-      EnvironmentFlags::kDefaultFlags | EnvironmentFlags::kNoCreateInspector;
++      snapshot_config.environment_flags | EnvironmentFlags::kNoCreateInspector;
+ 
+   auto ret = std::unique_ptr<CommonEnvironmentSetup>(new CommonEnvironmentSetup(
+       platform,
+diff --git a/src/api/environment.cc b/src/api/environment.cc
+--- a/src/api/environment.cc
++++ b/src/api/environment.cc
+@@ -393,6 +393,10 @@
+                     platform,
+                     SnapshotData::FromEmbedderWrapper(snapshot_data),
+                     settings);
++}
++
++Isolate* NewIsolateWithParams(Isolate::CreateParams* params, uv_loop_t* event_loop, MultiIsolatePlatform* platform, const EmbedderSnapshotData* snapshot_data, const IsolateSettings& settings) {
++  return NewIsolate(params, event_loop, platform, SnapshotData::FromEmbedderWrapper(snapshot_data), settings);
+ }
+ 
+ Isolate* NewIsolate(std::shared_ptr<ArrayBufferAllocator> allocator,
+diff --git a/src/node.h b/src/node.h
+--- a/src/node.h
++++ b/src/node.h
+@@ -497,2 +497,2 @@
+-class EmbedderSnapshotData {
++class NODE_EXTERN EmbedderSnapshotData {
+  public:
+@@ -499,4 +499,4 @@
+-  struct DeleteSnapshotData {
++  struct NODE_EXTERN DeleteSnapshotData {
+     void operator()(const EmbedderSnapshotData*) const;
+   };
+   using Pointer =
+@@ -565,4 +565,5 @@
+     MultiIsolatePlatform* platform,
+     const EmbedderSnapshotData* snapshot_data = nullptr,
+     const IsolateSettings& settings = {});
++NODE_EXTERN v8::Isolate* NewIsolateWithParams(v8::Isolate::CreateParams* params, struct uv_loop_s* event_loop, MultiIsolatePlatform* platform, const EmbedderSnapshotData* snapshot_data = nullptr, const IsolateSettings& settings = {});
+ 
+@@ -691,4 +692,5 @@
+   std::optional<std::string> builder_script_path;
++  EnvironmentFlags::Flags environment_flags = EnvironmentFlags::kDefaultFlags;
+ };
+ 
+ struct InspectorParentHandle {
